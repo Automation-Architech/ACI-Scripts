@@ -1,0 +1,150 @@
+#!/usr/bin/python -tt
+############################################################################
+# Remove static routes from nodes
+#
+# Read input form csv file
+#
+#############################################################################
+
+import requests
+import urllib3
+import json
+import csv
+import apic_vars
+# import re
+# import sys
+import time
+import argparse
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+def get_apic_vars():
+
+    host = apic_vars.host
+    apic_username = apic_vars.apic_username
+    apic_password = apic_vars.apic_password
+
+    return (host , apic_username , apic_password )
+
+def get_token(apic_username, apic_password, base_url):
+    # Get an authentication token for the device
+    try:
+        url = base_url + 'aaaLogin.json'
+        credentials = {'aaaUser':
+                           {'attributes':
+                                {'name': apic_username, 'pwd': apic_password}
+                            }
+                       }
+        json_credentials = json.dumps(credentials)
+
+        print("\nAuthenticating with the device . . .\n")
+
+        response = requests.post(url, data=json_credentials, headers={'Content-Type': 'application/json'}, verify=False)
+        # print json.dumps(response.json(), indent=2)
+        if response.status_code == requests.codes.ok:
+            print('Authentication successful!\n')
+        else:
+            print('Authentication failed! Please verify login credentials!\n')
+            exit(0)
+        token = response.json()['imdata'][0]['aaaLogin']['attributes']['token']
+
+        cookie = {'APIC-Cookie': token}
+        return cookie
+
+    except requests.exceptions.Timeout:
+        raise Exception('Connection timed out')
+    except requests.exceptions.ConnectionError:
+        raise Exception(f'Connection error: cannot logging to APIC with user {apic_username}')
+
+def  del_static_route(l3out_int_tenant, l3out_int_l3out , l3out_int_pro_node_prof , l3out_int_node_id , l3out_int_pod_id , l3out_static_route , l3out_next_hop , l3out_next_hop_pref , line_count , base_url, cookie , log ):
+
+    try:
+        url = base_url + 'policymgr/mo/.json'
+        payload = {"ipRouteP": {
+                       "attributes": {
+                           "dn": "uni/tn-" + l3out_int_tenant + "/out-" + l3out_int_l3out + "/lnodep-" + l3out_int_pro_node_prof + "/rsnodeL3OutAtt-[topology/pod-" + l3out_int_pod_id + "/node-" + l3out_int_node_id + "]/rt-["  + l3out_static_route + "]",
+                           "ip":l3out_static_route,
+                           "status": "deleted"
+                       },
+                        "children": [
+                           {  "ipNexthopP": {
+                                "attributes": {
+                                    "dn": "uni/tn-" + l3out_int_tenant + "/out-" + l3out_int_l3out +"/lnodep-" + l3out_int_pro_node_prof + "/rsnodeL3OutAtt-[topology/pod-" + l3out_int_pod_id + "/node-" + l3out_int_node_id + "]/rt-[" + l3out_static_route + "]/nh-[" + l3out_next_hop + "]",
+                                    "nhAddr": l3out_next_hop,
+                                    "pref": l3out_next_hop_pref ,
+                                    "status": "deleted"
+                                            }
+                                         }
+                                      },
+                                    ]
+                                  }
+                                }
+
+
+        response = requests.request("POST", url, cookies=cookie, headers={'Content-Type': 'application/json'}, data=json.dumps(payload), verify=False)
+
+        if response.status_code == requests.codes.ok:
+            print('done \n')
+            log.write( 'Deleted static route ' + l3out_static_route + ' ' + l3out_next_hop + ' from node ' + l3out_int_node_id +' \n')
+        else:
+            print(f'Error procesing line {line_count + 1}')
+            print(response.text.encode('utf8'))
+            exit(0)
+
+    except requests.exceptions.Timeout:
+        raise Exception('Connection timed out')
+    except requests.exceptions.ConnectionError:
+        raise Exception(f'Connection error')
+
+def main():
+ # Remove statics route from a node using data in csv file
+    host , apic_username , apic_password  = get_apic_vars()
+    base_url = f'https://{host}/api/'
+    file = input("Input csv file with static routes to delete: \n" ).strip()
+    cookie = get_token(apic_username, apic_password, base_url)
+
+    start_time = time.time()
+
+    filename_base = 'del_static_route'
+    timestr = time.strftime("%Y%m%d-%H%M%S")
+    log_filename = filename_base + '_' + timestr + ".log"
+    log = open(log_filename, 'w')
+    log.write(timestr + '\n')
+    log.write('\n===========Configuring static routes for file ===========\n')
+    log.write('===========' + file +'===========\n\n')
+
+    # Read CSV and delete static routes
+
+    with open(file, newline='') as csv_file:
+        csv_reader = csv.DictReader(csv_file, delimiter=';')
+        line_count = 0
+        for row in csv_reader:
+            log.write(str(line_count + 1) + '\t')
+
+            # Add route
+            del_static_route(row["l3out_int_tenant"].strip() , row["l3out_int_l3out"].strip() , row["l3out_int_pro_node_prof"].strip(), row["l3out_int_node_id"].strip() , row["l3out_int_pod_id"].strip() , row["l3out_static_route"].strip() , row["l3out_next_hop"].strip() , row["l3out_next_hop_pref"].strip() , line_count , base_url, cookie , log )
+            line_count += 1
+
+        print(f'Processed {line_count} lines.')
+        log.write('\nProcessed ' + str(line_count) + ' lines.' + '\n')
+
+    # End - Calculate time of execution
+
+    delta_time = str(time.time() - start_time)
+    textt = "\nScript Execution Time (s): " + delta_time
+    print(textt)
+    log.write(textt + "\n")
+
+    log.close()
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        prog='DeleteStaticRoute_csv',
+        description="Remove static routes from node based on csv file input",
+        epilog="",
+    )
+
+    args = parser.parse_args()
+    exit(main())
+
+
